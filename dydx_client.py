@@ -11,10 +11,11 @@ URI_API = 'https://api.dydx.exchange'
 
 class DydxClient:
 
+
     orderbook = {'asks': [], 'bids': []}
-    ask_offset = 0
-    bid_offset = 0
     _updates = 0
+    offsets = {}
+
 
     def __init__(self, symbol, keys=None):
         self._loop = asyncio.new_event_loop()
@@ -29,19 +30,21 @@ class DydxClient:
             # except Exception as e:
             #     print(f"Error line 33: {e}")
 
+
     async def _run_ws_loop(self):
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(URI_WS) as ws:
                 self._connected.set()
                 try:
                     self._ws = ws
-                    self._loop.create_task(self.subsribe_orderbook(self.symbol))
+                    self._loop.create_task(self._subsribe_orderbook(self.symbol))
                     async for msg in ws:
                         self._process_msg(msg)
                 finally:
                     self._connected.clear()
 
-    async def subsribe_orderbook(self, symbol):
+
+    async def _subsribe_orderbook(self, symbol):
         msg = {
         'type': 'subscribe',
         'channel': 'v3_orderbook',
@@ -51,56 +54,69 @@ class DydxClient:
         await self._connected.wait()
         await self._ws.send_json(msg)
 
-    def first_update(self, ob: dict):
-        orderbook = {'asks': [[float(ask['price']), float(ask['size'])] for ask in ob['asks']
-                              if float(ask['size']) > 0],
-                     'bids': [[float(bid['price']), float(bid['size'])] for bid in ob['bids']
-                              if float(bid['size']) > 0]
-                     }
-        orderbook['asks'], orderbook['bids'] = sorted(orderbook['asks']), sorted(orderbook['bids'])[::-1]
-        self.orderbook = orderbook
 
-    def append_new_bid(self, bids):
-        orderbook = self.orderbook
-        for new_bid in bids:
-            found = False
-            for bid in orderbook['bids']:
-                if float(new_bid[0]) == bid[0]:
-                    found = True
-                    if float(new_bid[1]) > 0:
-                        bid[1] = float(new_bid[1])
+    def _first_update(self, ob: dict):
+        for ask in ob['asks']:
+            if float(ask['size']) > 0:
+                self.orderbook['asks'].append([float(ask['price']), float(ask['size']), int(ask['offset'])])
+            self.offsets[ask['price']] = int(ask['offset'])
+        for bid in ob['bids']:
+            if float(bid['size']) > 0:
+                self.orderbook['bids'].append([float(bid['price']), float(bid['size']), int(bid['offset'])])
+            self.offsets[bid['price']] = int(bid['offset'])
+        self.orderbook['asks'] = sorted(self.orderbook['asks'])
+        self.orderbook['bids'] = sorted(self.orderbook['bids'])[::-1]
+
+
+    def _append_new_order(self, ob, side):
+        offset = int(ob['offset'])
+        for new_order in ob[side]:
+            if self.offsets.get(new_order[0]):
+                if self.offsets[new_order[0]] > offset:
+                    continue
+            self.offsets[new_order[0]] = offset
+            new_order = [float(new_order[0]), float(new_order[1]), offset]
+            index = 0
+            for order in self.orderbook[side]:
+                if new_order[0] == order[0]:
+                    if new_order[1] != 0.0:
+                        order[1] = new_order[1]
+                        order[2] = offset
+                        break
                     else:
-                        orderbook['bids'].remove(bid)
-            if not found:
-                new_bid = [float(new_bid[0]), float(new_bid[1])]
-                orderbook['bids'].append(new_bid)
-                orderbook['bids'] = sorted(orderbook['bids'])[::-1]
-        self.orderbook = orderbook
+                        self.orderbook[side].remove(order)
+                        break
+                if side == 'bids':
+                    if new_order[0] > order[0]:
+                        self.orderbook[side].insert(index, new_order)
+                        break
+                elif side == 'asks':
+                    if new_order[0] < order[0]:
+                        self.orderbook[side].insert(index, new_order)
+                        break
+                index += 1
+            if index == 0:
+                self._check_for_error()
 
-    def append_new_ask(self, asks):
-        orderbook = self.orderbook
-        for new_ask in asks:
-            found = False
-            for ask in orderbook['asks']:
-                if float(new_ask[0]) == ask[0]:
-                    found = True
-                    if float(new_ask[1]) > 0:
-                        ask[1] = float(new_ask[1])
-                    else:
-                        orderbook['asks'].remove(ask)
-            if not found:
-                new_ask = [float(new_ask[0]), float(new_ask[1])]
-                orderbook['asks'].append(new_ask)
-                orderbook['asks'] = sorted(orderbook['asks'])
-        self.orderbook = orderbook
 
-    def channel_update(self, ob: dict):
+
+    def _channel_update(self, ob: dict):
         if len(ob['bids']):
-            if self.bid_offset < int(ob['offset']):
-                self.append_new_bid(ob['bids'])
-        elif len(ob['asks']):
-            if self.ask_offset < int(ob['offset']):
-                self.append_new_ask(ob['asks'])
+            self._append_new_order(ob, 'bids')
+        if len(ob['asks']):
+            self._append_new_order(ob, 'asks')
+
+
+    def _check_for_error(self):
+        orderbook = self.orderbook
+        top_ask = orderbook['asks'][0]
+        top_bid = orderbook['bids'][0]
+        if top_ask[0] < top_bid[0]:
+            if top_ask[2] <= top_bid[2]:
+                self.orderbook['asks'].remove(top_ask)
+            else:
+                self.orderbook['bids'].remove(top_bid)
+
 
 
     def _process_msg(self, msg: aiohttp.WSMessage):
@@ -110,11 +126,10 @@ class DydxClient:
             if obj['type'] == 'connected':
                 pass
             elif obj['type'] == 'subscribed':
-                self.first_update(obj['contents'])
+                self._first_update(obj['contents'])
             elif obj['type'] == 'channel_data':
-                self.channel_update(obj['contents'])
-            else:
-                print(f"Unknown data: {obj}")
+                self._channel_update(obj['contents'])
+
 
     def get_orderbook(self):
         return self.orderbook
@@ -123,5 +138,8 @@ class DydxClient:
 # client = DydxClient('BTC-USD')
 # client.run_updater()
 # while True:
-#     time.sleep(5)
-#     print(client.get_orderbook())
+#     time.sleep(.1)
+#     orderbook = client.get_orderbook()
+#     print(f"Asks: {orderbook['asks'][:10]}")
+#     print(f"Bids: {orderbook['bids'][:10]}")
+#     print()
