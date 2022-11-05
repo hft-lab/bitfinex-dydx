@@ -151,7 +151,7 @@ class BitMEXWebsocket:
     #
     # End Public Methods
     def presize_price(self, price):
-        ticksize = bitmex_client.get_instrument()['tickSize']
+        ticksize = self.get_instrument()['tickSize']
         if '.' in str(ticksize):
             round_price_len = len(str(ticksize).split('.')[1])
         else:
@@ -355,10 +355,8 @@ class BitMEXWebsocket:
         for position in positions:
             if position['symbol'] == self.symbol:
                 if position['currentCost']:
-                    contract_price = ((position['currentCost'] / position['currentQty']) / 10**8)
-                    self.contract_price = contract_price * change
-                    position_value = position['currentCost']
-                    position_value = (position_value / 10 ** 8) * change
+                    position_value = -position['foreignNotional'] if position['currentQty'] < 0 else position['foreignNotional']
+                    self.contract_price = abs(position_value / position['currentQty'])
                 else:
                     position_value = 0
                 # currency = position['currency']
@@ -380,16 +378,16 @@ class BitMEXWebsocket:
 # api_secret = cp["BITMEX"]["api_secret"]
 #
 # bitmex_client = BitMEXWebsocket(symbol='ETHUSD', api_key=api_key, api_secret=api_secret)
+# # print(bitmex_client.market_depth())
+# # bitmex_client.create_order(1, 1300, 'Sell', 'Market')
+# # bitmex_client.create_order(1, 1300, 'Sell', 'Market')
+# # print(bitmex_client.recent_trades())
+# # #
+# # open_orders = bitmex_client.open_orders('')
+# # print(open_orders)
+# # id = open_orders[0]['orderID']
 #
-# bitmex_client.create_order(1, 1300, 'Sell', 'Market')
-# bitmex_client.create_order(1, 1300, 'Sell', 'Market')
-# print(bitmex_client.recent_trades())
-# #
-# open_orders = bitmex_client.open_orders('')
-# print(open_orders)
-# id = open_orders[0]['orderID']
-#
-# bitmex_client.cancel_order(id)
+# # bitmex_client.cancel_order(id)
 # while True:
 #     time.sleep(1)
 #     print(bitmex_client.get_available_balance('Buy'))

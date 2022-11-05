@@ -52,7 +52,7 @@ class DydxClient:
 
         self.orders = {}
         self.positions = {}
-        self.fills = []
+        self.fills = {}
         self.balance = {'free': 0, 'total': 0}
 
         self.keys = keys
@@ -93,18 +93,32 @@ class DydxClient:
         expire_date = int(round(time.time()) + expire)
         amount = self.presize_amount(amount)
         price = self.presize_price(price)
-        self.client.private.create_order(
-            position_id=self.position_id,  # required for creating the order signature
-            market=self.symbol,
-            side=side,
-            order_type=type,
-            post_only=False,
-            size=amount,
-            price=price,
-            limit_fee='0.0008',
-            expiration_epoch_seconds=expire_date,
-            time_in_force='GTT',
-            )
+        if type == "LIMIT":
+            self.client.private.create_order(
+                position_id=self.position_id,  # required for creating the order signature
+                market=self.symbol,
+                side=side,
+                order_type=type,
+                post_only=False,
+                size=amount,
+                price=price,
+                limit_fee='0.0008',
+                expiration_epoch_seconds=expire_date,
+                time_in_force='GTT'
+                )
+        else:
+            self.client.private.create_order(
+                position_id=self.position_id,  # required for creating the order signature
+                market=self.symbol,
+                side=side,
+                order_type=type,
+                post_only=False,
+                size=amount,
+                price=price,
+                limit_fee='0.0008',
+                expiration_epoch_seconds=expire_date,
+                time_in_force='FOK'
+                )
 
 
     def run_updater(self):
@@ -243,7 +257,8 @@ class DydxClient:
                 if not order['status'] in ['CANCELED', 'FILLED']:
                     self.orders[order['market']].update({order['id']: order})
                 else:
-                    self.orders.pop(order['id'])
+                    if self.orders.get(order['id']):
+                        self.orders.pop(order['id'])
             else:
                 self.orders.update({order['market']: {order['id']: order}})
             # order_example = [{'id': '28c21ee875838a5e349cf96d678d8c6151a250f979d6a025b3f79dcca703558',
@@ -283,7 +298,7 @@ class DydxClient:
                 accumulated_fills.update({fill['market']: fill})
             else:
                 accumulated_fills = self.__update_fill(accumulated_fills, fill)
-        for market, fill in accumulated_fills:
+        for market, fill in accumulated_fills.items():
             if self.fills.get(market):
                 self.fills[market].insert(0, fill)
             else:
@@ -332,7 +347,11 @@ class DydxClient:
         for market, position in positions.items():
             pos_size = abs(float(position['size']))
             pos_entry = float(position['entryPrice'])
-            pos_unrealized = float(position['unrealizedPnl'])
+            if position.get('unrealizedPnl'):
+                pos_unrealized = float(position['unrealizedPnl'])
+            else:
+                pos_unrealized = 0
+                # print(position)
             if market == self.symbol:
                 position_value = pos_size * pos_entry + pos_unrealized
                 continue
@@ -391,8 +410,20 @@ class DydxClient:
 # dydx_keys = cp['DYDX']
 # client = DydxClient('ETH-USD', dydx_keys)
 # client.run_updater()
-# # time_start = time.time()
-# # client.create_order(amount=0.1, price=1200, side='BUY', expire=100, type='LIMIT'/'MARKET')
+# # # # # time_start = time.time()
+# time.sleep(3)
+# orderbook = client.get_orderbook()
+# # # #
+# client.create_order(amount=0.45, price=orderbook['bids'][0][0], side='SELL', type='LIMIT')
+# while True:
+#     time.sleep(1)
+#     print('Fills')
+#     print(client.get_fills())
+#     print()
+#     print('Positions')
+#     print(client.get_positions())
+#     print()
+# #     print(client.get_fills())
 # time.sleep(3)
 # print(client.get_available_balance('Buy'))
 # print(client.get_available_balance('Sell'))
@@ -407,12 +438,9 @@ class DydxClient:
 # print('Balance')
 # print(client.get_balance())
 # print()
-# print('Positions')
-# print(client.get_positions())
-# print()
+# time.sleep(5)
+
 # print('Orders')
 # print(client.get_orders())
 # print()
-# print('Fills')
-# print(client.get_fills())
-# print()
+

@@ -35,9 +35,7 @@ class botDydxBitmex:
         self.symbol_dydx = symbol_dydx
         self.contract_price = 0.0015
         self.contract_price_asset = 'BTC'
-        self.block_liquidity = {}
-
-
+        self.last_message = None
 
         self.client_Bitmex = bitmexClient.BitMEXWebsocket(symbol_bitmex,
                                                           cp["BITMEX"]["api_key"],
@@ -51,7 +49,7 @@ class botDydxBitmex:
         self.telegram_bot.send_message(self.chat_id, f'Bot Bitmex-Dydx started. Pairs: {symbol_bitmex}-{symbol_dydx}')
 
     def find_price_diffs(self):
-        orderbook_bitmex = self.client_Bitmex.market_depth()[0]
+        orderbook_bitmex = self.client_Bitmex.market_depth()[self.symbol_bitmex]
         orderbook_dydx = self.client_DYDX.get_orderbook()
         if orderbook_dydx['bids'][0][0] > orderbook_bitmex['asks'][0][0]:
             self.count_dydx_sell_profit()
@@ -59,21 +57,29 @@ class botDydxBitmex:
             self.count_bitmex_sell_profit()
 
     def count_bitmex_sell_profit(self):
-        orderbook_bitmex = self.client_Bitmex.market_depth()[0]
+        orderbook_bitmex = self.client_Bitmex.market_depth()[self.symbol_bitmex]
         orderbook_dydx = self.client_DYDX.get_orderbook()
         buy_price = orderbook_dydx['asks'][0][0] + self.dydx_fee * orderbook_dydx['asks'][0][0]
         sell_price = orderbook_bitmex['bids'][0][0] - self.bitmex_fee * orderbook_bitmex['bids'][0][0]
         profit = (sell_price - buy_price) / buy_price * 100
         if profit > 0:
-            self.create_deal(orderbook_bitmex['asks'][0], orderbook_dydx['bids'][0], profit, 'BITMEX')
+            if self.last_message == f"Ask: {orderbook_dydx['asks'][0]}, Bid: {orderbook_bitmex['bids'][0]}, Line 66":
+                return
+            print(f"Ask: {orderbook_dydx['asks'][0]}, Bid: {orderbook_bitmex['bids'][0]}, Line 66")
+            self.last_message = f"Ask: {orderbook_dydx['asks'][0]}, Bid: {orderbook_bitmex['bids'][0]}, Line 66"
+            self.create_deal(orderbook_dydx['asks'][0], orderbook_bitmex['bids'][0], profit, 'BITMEX')
 
     def count_dydx_sell_profit(self):
-        orderbook_bitmex = self.client_Bitmex.market_depth()[0]
+        orderbook_bitmex = self.client_Bitmex.market_depth()[self.symbol_bitmex]
         orderbook_dydx = self.client_DYDX.get_orderbook()
         buy_price = orderbook_bitmex['asks'][0][0] + self.bitmex_fee * orderbook_bitmex['asks'][0][0]
         sell_price = orderbook_dydx['bids'][0][0] - self.dydx_fee * orderbook_dydx['bids'][0][0]
         profit = (sell_price - buy_price) / buy_price * 100
         if profit > 0:
+            if self.last_message == f"Ask: {orderbook_bitmex['asks'][0]}, Bid: {orderbook_dydx['bids'][0]}, Line 75":
+                return
+            print(f"Ask: {orderbook_bitmex['asks'][0]}, Bid: {orderbook_dydx['bids'][0]}, Line 75")
+            self.last_message = f"Ask: {orderbook_bitmex['asks'][0]}, Bid: {orderbook_dydx['bids'][0]}, Line 75"
             self.create_deal(orderbook_bitmex['asks'][0], orderbook_dydx['bids'][0], profit, 'DYDX')
 
     def create_deal(self, ask, bid, profit, exchange):
@@ -87,7 +93,7 @@ class botDydxBitmex:
                 amount_bitmex = int(round(amount / contract_price))
                 amount_dydx = amount / ask[0]
                 self.client_Bitmex.create_order(amount_bitmex, bid[0], 'Sell', 'Market')
-                self.client_DYDX.create_order(amount_dydx, ask[0], 'BUY', 'MARKET')
+                self.client_DYDX.create_order(amount_dydx, ask[0] * 2, 'BUY', 'LIMIT')
             else:
                 return
         else:
@@ -100,33 +106,38 @@ class botDydxBitmex:
                 amount_bitmex = int(round(amount / contract_price))
                 amount_dydx = amount / bid[0]
                 self.client_Bitmex.create_order(amount_bitmex, ask[0], 'Buy', 'Market')
-                self.client_DYDX.create_order(amount_dydx, bid[0], 'SELL', 'MARKET')
+                self.client_DYDX.create_order(amount_dydx, bid[0] / 2, 'SELL', 'LIMIT')
             else:
                 return
-        last_trade_bitmex = self.client_Bitmex.recent_trades()
-        last_trade_dydx = self.client_DYDX.get_fills()[self.client_DYDX.symbol][0]
-        self.create_message(ask, bid, profit, exchange, last_trade_bitmex, last_trade_dydx, amount, amount_bitmex, amount_dydx)
+        self.create_message(ask, bid, profit, exchange, amount, amount_bitmex, amount_dydx)
 
-    def create_message(self, ask, bid, profit, exchange, last_trade_bitmex, last_trade_dydx, amount, amount_bitmex, amount_dydx):
-        amount_dydx = self.client_DYDX.presize_amount(amount_dydx)
+    def create_message(self, ask, bid, profit, exchange, amount, amount_bitmex, amount_dydx):
+        time.sleep(1)
+        last_trade_bitmex = self.client_Bitmex.recent_trades()
+        last_trade_dydx = self.client_DYDX.get_fills()
+        # amount_dydx = self.client_DYDX.presize_amount(amount_dydx)
         real_sell_price = None
         real_buy_price = None
         if exchange == 'BITMEX':
             for trade in last_trade_bitmex:
-                if trade['side'] == 'Sell' and amount_bitmex == trade['size']:
+                if trade['side'] == 'Sell':
                     real_sell_price = trade['price']
-            if last_trade_dydx['side'] == 'BUY' and last_trade_dydx['size'] == amount_dydx:
-                real_buy_price = last_trade_dydx['price']
-            else:
-                print(f"Last trade dydx: {last_trade_dydx['size']}\nAmount dydx: {amount_dydx}")
+            if last_trade_dydx.get(self.client_DYDX.symbol):
+                last_trade_dydx = last_trade_dydx[self.client_DYDX.symbol][0]
+                if last_trade_dydx['side'] == 'BUY':
+                    real_buy_price = last_trade_dydx['price']
+                else:
+                    print(f"Last trade dydx: {last_trade_dydx['size']}\nAmount dydx: {amount_dydx}")
         else:
             for trade in last_trade_bitmex:
-                if trade['side'] == 'Buy' and amount_bitmex == trade['size']:
+                if trade['side'] == 'Buy':
                     real_buy_price = trade['price']
-            if last_trade_dydx['side'] == 'SELL' and last_trade_dydx['size'] == amount_dydx:
-                real_sell_price = last_trade_dydx['price']
-            else:
-                print(f"Last trade dydx: {last_trade_dydx['size']}\nAmount dydx: {amount_dydx}")
+            if last_trade_dydx.get(self.client_DYDX.symbol):
+                last_trade_dydx = last_trade_dydx[self.client_DYDX.symbol][0]
+                if last_trade_dydx['side'] == 'SELL':
+                    real_sell_price = last_trade_dydx['price']
+                else:
+                    print(f"Last trade dydx: {last_trade_dydx['size']}\nAmount dydx: {amount_dydx}")
         message = f"Found profit deal"
         message += f"\nPair: {self.symbol_dydx}"
         message += f"\nSell exchange: {exchange}"
@@ -152,11 +163,11 @@ class botDydxBitmex:
 
 
 bot = botDydxBitmex('ETHUSD', 'ETH-USD')
-while True:
-    try:
-        bot.run()
-    except Exception as e:
-        pass
+# while True:
+    # try:
+bot.run()
+    # except Exception as e:
+    #     pass
 
 
 
