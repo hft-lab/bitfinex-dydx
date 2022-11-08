@@ -49,9 +49,7 @@ class BitMEXWebsocket:
         self.leverage = leverage
         self.symbol = symbol
         self.contract_price = 0
-
-        self.taker_fee = 0.00075
-        self.maker_fee = -0.0001
+        self.step = 0
 
         if api_key is not None and api_secret is None:
             raise ValueError('api_secret is required if api_key is provided')
@@ -78,6 +76,15 @@ class BitMEXWebsocket:
         self.__wait_for_symbol(symbol)
         if api_key:
             self.__wait_for_account()
+
+        self.taker_fee = self.get_instrument()['takerFee']
+        self.maker_fee = self.get_instrument()['makerFee']
+        if self.funds()[0]['takerFeeDiscount']:
+            self.taker_fee -= self.taker_fee * self.funds()[0]['takerFeeDiscount']
+        if self.funds()[0]['makerFeeDiscount']:
+            self.maker_fee -= self.maker_fee * self.funds()[0]['takerFeeDiscount']
+
+
         self.logger.info('Got all market data. Starting.')
 
     def swagger_client_init(self, config=None):
@@ -129,7 +136,7 @@ class BitMEXWebsocket:
 
     def funds(self):
         '''Get your margin details.'''
-        return self.data['margin'][0]
+        return self.data['margin']
 
     def positions(self):
         '''Get your positions.'''
@@ -235,6 +242,7 @@ class BitMEXWebsocket:
         urlParts = list(urllib.parse.urlparse(self.endpoint))
         urlParts[2] += "?subscribe={}".format(','.join(subscriptions_full))
         urlParts[2] += ',orderBook10:XBTUSD'
+        # print(urlParts[2])
         return urllib.parse.urlunparse(urlParts)
 
     def __wait_for_account(self):
@@ -304,6 +312,9 @@ class BitMEXWebsocket:
                         if table == 'orderBook10':
                             symbol = updateData['symbol']
                             self.data[table].update({symbol: updateData})
+                        elif table == 'trade':
+                            symbol = updateData['symbol']
+                            self.data[table].insert(0, updateData)
                         else:
                             item = self.find_by_keys(self.keys[table], self.data[table], updateData)
                             if not item:
@@ -349,19 +360,25 @@ class BitMEXWebsocket:
                 return item
 
     def get_available_balance(self, side):
-        funds = self.funds()
+        if not 'USDT' in self.symbol:
+            funds = self.funds()[0]
+            change = self.market_depth()['XBTUSD']['bids'][0][0]
+        else:
+            funds = self.funds()[1]
         positions = self.positions()
-        change = self.market_depth()['XBTUSD']['bids'][0][0]
         for position in positions:
             if position['symbol'] == self.symbol:
-                if position['currentCost']:
-                    position_value = -position['foreignNotional'] if position['currentQty'] < 0 else position['foreignNotional']
+                if position['foreignNotional']:
+                    position_value = position['homeNotional'] * position['lastPrice']
                     self.contract_price = abs(position_value / position['currentQty'])
                 else:
                     position_value = 0
-                # currency = position['currency']
-        # if currency == 'XBt':
-        available_balance = (funds['walletBalance'] / 10**8) * change * self.leverage
+                currency = position['currency']
+        # print(position_value)
+        if currency == 'XBt':
+            available_balance = (funds['walletBalance'] / 10 ** 8) * change * self.leverage
+        else:
+            available_balance = (funds['walletBalance'] / 10 ** 6) * self.leverage
         if side == 'Buy':
             return available_balance - position_value
         else:
@@ -376,25 +393,26 @@ class BitMEXWebsocket:
 #
 # api_key = cp["BITMEX"]["api_key"]
 # api_secret = cp["BITMEX"]["api_secret"]
+# #
+# bitmex_client = BitMEXWebsocket(symbol='XBTUSDT', api_key=api_key, api_secret=api_secret)
 #
-# bitmex_client = BitMEXWebsocket(symbol='ETHUSD', api_key=api_key, api_secret=api_secret)
-# # print(bitmex_client.market_depth())
-# # bitmex_client.create_order(1, 1300, 'Sell', 'Market')
-# # bitmex_client.create_order(1, 1300, 'Sell', 'Market')
-# # print(bitmex_client.recent_trades())
-# # #
-# # open_orders = bitmex_client.open_orders('')
-# # print(open_orders)
-# # id = open_orders[0]['orderID']
-#
-# # bitmex_client.cancel_order(id)
+# open_orders = bitmex_client.open_orders('')
+# print(open_orders)
+# id = open_orders[0]['orderID']
+
+# bitmex_client.cancel_order(id)
 # while True:
 #     time.sleep(1)
+#     # print(f"RECENT TRADES")
+#     # print(bitmex_client.recent_trades())
+#
 #     print(bitmex_client.get_available_balance('Buy'))
 #     print(bitmex_client.get_available_balance('Sell'))
-#     print(bitmex_client.contract_price)
-    # print('FUNDS')
-    # print(bitmex_client.funds())
+#     # print(bitmex_client.contract_price)
+# print(bitmex_client.taker_fee)
+# print(bitmex_client.maker_fee)
+# print('FUNDS')
+# print(bitmex_client.funds())
     # print('POSITIONS')
     # print(bitmex_client.positions())
     # print('ORDERBOOK')

@@ -344,6 +344,7 @@ class DydxClient:
         balance = self.balance
         positions = self.positions
         tot_pos_value = 0
+        position_value = 0
         for market, position in positions.items():
             pos_size = abs(float(position['size']))
             pos_entry = float(position['entryPrice'])
@@ -351,7 +352,6 @@ class DydxClient:
                 pos_unrealized = float(position['unrealizedPnl'])
             else:
                 pos_unrealized = 0
-                # print(position)
             if market == self.symbol:
                 position_value = pos_size * pos_entry + pos_unrealized
                 continue
