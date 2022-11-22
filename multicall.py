@@ -38,6 +38,12 @@ class Pool:
             t.join()
         self.calls = []
 
+    def call_all(self):
+        for t in self.calls:
+            thread = Thread(target=t[0], args=t[1], kwargs=t[2])
+            thread.start()
+        self.calls = []
+
 
 class PoolTest(unittest.TestCase):
 
@@ -54,3 +60,14 @@ class PoolTest(unittest.TestCase):
         p.add(self.sample_func, 2, kwarg1="test2")
         p.call_all_and_wait()
         print("all done")
+
+
+# bot.client_Bitmex.create_order(1000, 12000, 'Buy', 'Limit')
+# bot.client_DYDX.create_order(0.1, 25000, 'SELL', 'LIMIT')
+# my_pool = Pool()
+# # my_pool.add(bot.client_Bitmex.create_order, 1000, 12000, side='Buy', type='Limit', clOrdID='TEST2')
+# my_pool.add(bot.client_DYDX.create_order, 0.1, 25000, 'SELL', 'LIMIT')
+# my_pool.call_all()  # will start all targets and wait until all done.
+# #
+# time.sleep(1)
+# print(bot.client_Bitmex.open_orders(clOrdIDPrefix=''))
