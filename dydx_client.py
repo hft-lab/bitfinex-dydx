@@ -375,25 +375,13 @@ class DydxClient:
     def get_available_balance(self, side):
         balance = self.balance
         positions = self.positions
-        tot_pos_value = 0
         position_value = 0
+        change = (self.orderbook['asks'][0][0] + self.orderbook['bids'][0][0]) / 2
         for market, position in positions.items():
-            pos_size = abs(float(position['size']))
-            pos_entry = float(position['entryPrice'])
-            if position.get('unrealizedPnl'):
-                pos_unrealized = float(position['unrealizedPnl'])
-            else:
-                pos_unrealized = 0
             if market == self.symbol:
-                position_value = pos_size * pos_entry + pos_unrealized
+                position_value = float(position['size']) * change
                 continue
-            tot_pos_value += pos_size * pos_entry + pos_unrealized
-        if position_value:
-            position_value = position_value if position['side'] == 'LONG' else -position_value
-        else:
-            position_value = 0
-        total_available_margin = balance['total'] * self.leverage
-        available_margin = total_available_margin - tot_pos_value
+        available_margin = balance['total'] * self.leverage
         if side == 'Buy':
             return available_margin - position_value
         elif side == 'Sell':

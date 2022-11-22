@@ -37,15 +37,15 @@ class botDydxBitmex:
         self.pos_power = 6 if 'USDT' in symbol_bitmex else 8
         self.currency = 'USDt' if 'USDT' in self.symbol_bitmex else 'XBt'
         self.rate = 0
-        self.profit_taker = 0.0001
-        self.profit_maker = 0.00025
+        self.profit_taker = 0.000
+        self.profit_maker = 0.000
 
         self.chat_id = cp["TELEGRAM"]["chat_id"]
         self.daily_chat_id = cp["TELEGRAM"]["daily_chat_id"]
         self.inv_chat_id = cp["TELEGRAM"]["inv_chat_id"]
         self.telegram_bot = telebot.TeleBot(cp["TELEGRAM"]["token"])
         self.pool = multicall.Pool()
-        self.database = database(self.telegram_bot, self.chat_id)
+        self.database = database(self.telegram_bot, self.chat_id, self.symbol_bitmex)
         self.init_clients()
         self.dydx_fee = self.client_DYDX.taker_fee
         self.bitmex_fee = self.client_Bitmex.taker_fee
@@ -334,7 +334,7 @@ class botDydxBitmex:
         return final_pnl
 
     def daily_report(self):
-        base_data = self.database.fetch_data_from_table('deals')
+        base_data = self.database.fetch_data_from_table(f'deals_{self.symbol_bitmex}')
         counted_deals = self.day_deals_count(base_data)
         pnl_diff = self.pnl_count(base_data, counted_deals['total_deal_count'])
         message = self.create_daily_message(counted_deals, pnl_diff)
@@ -483,9 +483,10 @@ class botDydxBitmex:
         if len(self.client_Bitmex.open_orders('MAKER')):
             message += f"\nOPEN ORDERS:"
             message += self.get_open_makers()
-        message += f"\nAvail. sell, USD: {self.avail_balance_define('BITMEX')}"
-        message += f"\nAvail. sell, USD: {self.avail_balance_define('DYDX')}"
-        message += f"\nLast deal time: {datetime.datetime.fromtimestamp(self.database.fetch_data_from_table('deals')[-1][1])}"
+        message += f"\nAvail. Bit sell, USD: {round(self.avail_balance_define('BITMEX'))}"
+        message += f"\nAvail. Bit buy, USD: {round(self.avail_balance_define('DYDX'))}"
+        last_timestamp = self.database.fetch_data_from_table(f'deals_{self.symbol_bitmex}')[-1][1]
+        message += f"\nLast deal time: {datetime.datetime.fromtimestamp(last_timestamp)}"
         return message
 
     def time_based_messages(self):
@@ -624,7 +625,7 @@ class botDydxBitmex:
         for order in orders:
             self.client_Bitmex.cancel_order(order['orderID'])
 
-bot = botDydxBitmex('XBTUSD', 'BTC-USD')
+bot = botDydxBitmex('ETHUSD', 'ETH-USD')
 doc = open('deals.db', 'rb')
 try:
     bot.telegram_bot.send_document(bot.chat_id, doc)

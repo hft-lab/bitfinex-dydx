@@ -3,16 +3,17 @@ import datetime
 
 class database:
 
-    def __init__(self, telegram_bot, chat_id):
+    def __init__(self, telegram_bot, chat_id, symbol):
         self.chat_id = chat_id
         self.telegram_bot = telegram_bot
 
+        self.symbol = symbol
         self.connect = sqlite3.connect('deals.db')
-        self.sql_create_orders_table()
+        self.sql_create_orders_table(symbol)
 
-    def sql_create_orders_table(self):
+    def sql_create_orders_table(self, symbol):
         cursor = self.connect.cursor()
-        cursor.execute("""CREATE TABLE IF NOT EXISTS deals (
+        cursor.execute(f"""CREATE TABLE IF NOT EXISTS deals_{symbol} (
         order_num INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp REAL,
         sell_exchange TEXT,
@@ -35,7 +36,7 @@ class database:
 
     def base_update(self, to_base):
         cursor = self.connect.cursor()
-        sql = f"""INSERT INTO deals (
+        sql = f"""INSERT INTO deals_{self.symbol} (
         timestamp,
         sell_exchange,
         sell_price,
@@ -76,8 +77,6 @@ class database:
 
 
     def fetch_data_from_table(self, table):
-        if not table == 'deals':
-            raise Exception('Have only tables: deals')
         cursor = self.connect.cursor()
         data = cursor.execute(f"SELECT * FROM {table};").fetchall()
         cursor.close()
