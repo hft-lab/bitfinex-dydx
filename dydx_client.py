@@ -21,7 +21,7 @@ URI_API = 'https://api.dydx.exchange'
 class DydxClient:
 
 
-    orderbook = {'asks': [], 'bids': []}
+    orderbook = {'asks': [], 'bids': [], 'timestamp': 0}
     positions = {}
     orders = {}
     
@@ -50,6 +50,7 @@ class DydxClient:
             api_key_credentials=self.API_KEYS
         )
 
+
         self.orders = {}
         self.positions = {}
         self.fills = {}
@@ -58,7 +59,7 @@ class DydxClient:
         self.keys = keys
         self.user = self.client.private.get_user().data
         self.balance = self.client.private.get_account().data
-        self.markets = self.client.public.get_markets()
+        self.markets = self.client.public.get_markets().data
         self.leverage = leverage
 
         self.position_id = self.balance['account']['positionId']
@@ -66,8 +67,8 @@ class DydxClient:
         self.maker_fee = float(self.user['user']['makerFeeRate']) * 0.7
         self.taker_fee = float(self.user['user']['takerFeeRate']) * 0.7
 
-        self.ticksize = float(self.markets.data['markets'][symbol]['tickSize'])
-        self.stepsize = float(self.markets.data['markets'][symbol]['stepSize'])
+        self.ticksize = float(self.markets['markets'][symbol]['tickSize'])
+        self.stepsize = float(self.markets['markets'][symbol]['stepSize'])
 
     def cancel_order(self, orderID):
         self.client.private.cancel_order(order_id=orderID)
@@ -88,37 +89,53 @@ class DydxClient:
         price = str(round(price - (price % self.ticksize), round_price_len))
         return price
 
+    def exit(self):
+        self._ws.close()
+        while True:
+            try:
+                self._loop.stop()
+                self._loop.close()
+                return
+            except:
+                pass
 
     def create_order(self, amount, price, side, type, expire=100):
         expire_date = int(round(time.time()) + expire)
         amount = self.presize_amount(amount)
         price = self.presize_price(price)
-        if type == "LIMIT":
-            self.client.private.create_order(
-                position_id=self.position_id,  # required for creating the order signature
-                market=self.symbol,
-                side=side,
-                order_type=type,
-                post_only=False,
-                size=amount,
-                price=price,
-                limit_fee='0.0008',
-                expiration_epoch_seconds=expire_date,
-                time_in_force='GTT'
-                )
-        else:
-            self.client.private.create_order(
-                position_id=self.position_id,  # required for creating the order signature
-                market=self.symbol,
-                side=side,
-                order_type=type,
-                post_only=False,
-                size=amount,
-                price=price,
-                limit_fee='0.0008',
-                expiration_epoch_seconds=expire_date,
-                time_in_force='FOK'
-                )
+        for i in range(5):
+            try:
+                if type == "LIMIT":
+                    self.client.private.create_order(
+                        position_id=self.position_id,  # required for creating the order signature
+                        market=self.symbol,
+                        side=side,
+                        order_type=type,
+                        post_only=False,
+                        size=amount,
+                        price=price,
+                        limit_fee='0.0008',
+                        expiration_epoch_seconds=expire_date,
+                        time_in_force='GTT'
+                        )
+                else:
+                    self.client.private.create_order(
+                        position_id=self.position_id,  # required for creating the order signature
+                        market=self.symbol,
+                        side=side,
+                        order_type=type,
+                        post_only=False,
+                        size=amount,
+                        price=price,
+                        limit_fee='0.0008',
+                        expiration_epoch_seconds=expire_date,
+                        time_in_force='FOK'
+                        )
+            except:
+                time.sleep(0.1)
+                continue
+            break
+
 
 
     def run_updater(self):
@@ -192,6 +209,7 @@ class DydxClient:
             if self.offsets.get(new_order[0]):
                 if self.offsets[new_order[0]] > offset:
                     continue
+            self.orderbook['timestamp'] = time.time()
             self.offsets[new_order[0]] = offset
             new_order = [float(new_order[0]), float(new_order[1]), offset]
             index = 0
@@ -237,6 +255,7 @@ class DydxClient:
 
     def _update_positions(self, positions):
         for position in positions:
+            position.update({'timestamp': time.time()})
             self.positions.update({position['market']: position})
             # position_example = [{'id': '312711e6-d172-5e5b-9dc8-362101e94756',
             # 'accountId': 'f47ae945-06ae-5c47-aaad-450c0ffc6164', 'market': 'SNX-USD',
@@ -247,6 +266,19 @@ class DydxClient:
             # 'updatedAt': '2022-10-11T00:50:34.217Z', 'createdAt': '2022-10-11T00:50:34.217Z',
             # 'sumOpen': '219717.4', 'sumClose': '206588.3', 'netFunding': '706.266653',
             # 'realizedPnl': '7771.372704'}]
+
+    def get_pnl(self):
+        try:
+            position = self.get_positions()[self.symbol]
+        except:
+            return 0
+        realized_pnl = float(position['realizedPnl'])
+        entry_price = float(position['entryPrice'])
+        size = float(position['size'])
+        index_price = self.get_orderbook()
+        index_price = (index_price['asks'][0][0] + index_price['bids'][0][0]) / 2
+        unrealized_pnl = size * (index_price - entry_price)
+        return unrealized_pnl + realized_pnl
 
     def get_positions(self):
         return self.positions
@@ -356,7 +388,10 @@ class DydxClient:
                 position_value = pos_size * pos_entry + pos_unrealized
                 continue
             tot_pos_value += pos_size * pos_entry + pos_unrealized
-        position_value = position_value if position['side'] == 'LONG' else -position_value
+        if position_value:
+            position_value = position_value if position['side'] == 'LONG' else -position_value
+        else:
+            position_value = 0
         total_available_margin = balance['total'] * self.leverage
         available_margin = total_available_margin - tot_pos_value
         if side == 'Buy':
@@ -400,47 +435,22 @@ class DydxClient:
 
 # import configparser
 # import sys
-#
+
 # cp = configparser.ConfigParser()
 # if len(sys.argv) != 2:
-#     # print("Usage %s <config.ini>" % sys.argv[0])
 #     sys.exit(1)
 # cp.read(sys.argv[1], "utf-8")
-# #
 # dydx_keys = cp['DYDX']
-# client = DydxClient('ETH-USD', dydx_keys)
+# client = DydxClient('DOGE-USD', dydx_keys)
 # client.run_updater()
-# # # # # time_start = time.time()
-# time.sleep(3)
-# orderbook = client.get_orderbook()
-# # # #
-# client.create_order(amount=0.45, price=orderbook['bids'][0][0], side='SELL', type='LIMIT')
+
 # while True:
-#     time.sleep(1)
-#     print('Fills')
-#     print(client.get_fills())
-#     print()
-#     print('Positions')
-#     print(client.get_positions())
-#     print()
-# #     print(client.get_fills())
-# time.sleep(3)
-# print(client.get_available_balance('Buy'))
-# print(client.get_available_balance('Sell'))
-
-# # print(f"Order create function time: {time.time() - time_start}")
-# # while True:
-#     # time.sleep(1)
-#     # orderbook = client.get_orderbook()
-# #     print(f"Asks: {orderbook['asks'][:10]}")
-# #     print(f"Bids: {orderbook['bids'][:10]}")
-# #     print()
-# print('Balance')
+# orderbook = client.get_orderbook()
+# client.create_order(amount=0.45, price=orderbook['bids'][0][0], side='SELL', type='LIMIT')
+# print(client.get_fills())
+# positions = client.get_positions()
+# print(client.get_fills())
 # print(client.get_balance())
-# print()
-# time.sleep(5)
-
-# print('Orders')
-# print(client.get_orders())
-# print()
+# print(client.markets['markets']['BTC-USD'])
+# a = client.client.private.get_orders(market=['SOL-USD']).data
 

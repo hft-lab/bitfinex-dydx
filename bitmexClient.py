@@ -16,6 +16,7 @@ from bravado.client import SwaggerClient
 from bravado.requests_client import RequestsClient
 from APIKeyAuthenticator import APIKeyAuthenticator
 import urllib.parse
+import datetime
 
 
 
@@ -33,7 +34,7 @@ class BitMEXWebsocket:
     MAX_TABLE_LEN = 200
     endpoint = 'wss://ws.bitmex.com/realtime'
 
-    def __init__(self, symbol, api_key=None, api_secret=None, subscriptions=DEFAULT_SUBS, leverage=2):
+    def __init__(self, symbol, api_key=None, api_secret=None, leverage=2):
         '''Connect to the websocket and initialize data stores.'''
         subscriptions = ['execution',
                          'instrument',
@@ -46,9 +47,9 @@ class BitMEXWebsocket:
         self.logger = logging.getLogger(__name__)
         self.logger.debug("Initializing WebSocket.")
 
+        self.pos_power = 6 if 'USDT' in symbol else 8
         self.leverage = leverage
         self.symbol = symbol
-        self.contract_price = 0
         self.step = 0
 
         if api_key is not None and api_secret is None:
@@ -71,21 +72,27 @@ class BitMEXWebsocket:
         self.logger.info("Connecting to %s" % wsURL)
         self.__connect(wsURL, symbol)
         self.logger.info('Connected to WS.')
-
         # Connected. Wait for partials
         self.__wait_for_symbol(symbol)
         if api_key:
             self.__wait_for_account()
-
-        self.taker_fee = self.get_instrument()['takerFee']
-        self.maker_fee = self.get_instrument()['makerFee']
-        if self.funds()[0]['takerFeeDiscount']:
-            self.taker_fee -= self.taker_fee * self.funds()[0]['takerFeeDiscount']
-        if self.funds()[0]['makerFeeDiscount']:
-            self.maker_fee -= self.maker_fee * self.funds()[0]['takerFeeDiscount']
-
+        commission = self.swagger_client.User.User_getCommission().result()[0]
+        self.taker_fee = commission[self.symbol]['takerFee']
+        self.maker_fee = commission[self.symbol]['makerFee']
+        self.ticksize = self.get_instrument()['tickSize']
+        try:
+            self.get_contract_price()
+        except:
+            self.create_order(1, 15000, 'Buy', 'Market', 'CANCEL1')
+            time.sleep(1)
+            self.get_contract_price()
+            pass
 
         self.logger.info('Got all market data. Starting.')
+
+    def get_contract_price(self):
+        pos = self.positions()[0]
+        self.contract_price = (pos['currentCost'] / pos['currentQty']) / (10 ** self.pos_power)
 
     def swagger_client_init(self, config=None):
         if config is None:
@@ -166,7 +173,7 @@ class BitMEXWebsocket:
         price = round(price - (price % ticksize), round_price_len)
         return price
 
-    def create_order(self, amount, price, side, type):
+    def create_order(self, amount, price, side, type, clOrdID=None):
         price = self.presize_price(price)
         amount = int(round(amount))
         if type == 'Limit':
@@ -174,12 +181,22 @@ class BitMEXWebsocket:
                                                 side=side,
                                                 ordType=type,
                                                 orderQty=amount,
-                                                price=price).result()
+                                                price=price,
+                                                clOrdID=clOrdID
+                                                ).result()
         else:
             self.swagger_client.Order.Order_new(symbol=self.symbol,
                                                 side=side,
                                                 ordType=type,
-                                                orderQty=amount).result()
+                                                orderQty=amount,
+                                                clOrdID=clOrdID).result()
+
+    def change_order(self, amount, price, id):
+        if amount:
+            self.swagger_client.Order.Order_amend(orderID=id, orderQty=amount, price=price).result()
+        else:
+            self.swagger_client.Order.Order_amend(orderID=id, price=price).result()
+
 
     def cancel_order(self, orderID):
         self.swagger_client.Order.Order_cancel(orderID=orderID).result()
@@ -287,6 +304,7 @@ class BitMEXWebsocket:
                     self.logger.debug("%s: partial" % table)
                     self.keys[table] = message['keys']
                     if table == 'orderBook10':
+                        message['data'][0].update({'timestamp': time.time()})
                         symbol = message['filter']['symbol']
                         self.data[table].update({symbol: message['data']})
                     else:
@@ -310,10 +328,12 @@ class BitMEXWebsocket:
                     # Locate the item in the collection and update it.
                     for updateData in message['data']:
                         if table == 'orderBook10':
+                            updateData.update({'timestamp': time.time()})
                             symbol = updateData['symbol']
                             self.data[table].update({symbol: updateData})
                         elif table == 'trade':
-                            symbol = updateData['symbol']
+                            self.data[table].insert(0, updateData)
+                        elif table == 'execution':
                             self.data[table].insert(0, updateData)
                         else:
                             item = self.find_by_keys(self.keys[table], self.data[table], updateData)
@@ -334,6 +354,23 @@ class BitMEXWebsocket:
                     raise Exception("Unknown action: %s" % action)
         except:
             self.logger.error(traceback.format_exc())
+
+    def get_pnl(self):
+        positions = self.positions()
+        pnl = [x for x in positions if x['symbol'] == self.symbol]
+        pnl = None if not len(pnl) else pnl[0]
+        if not pnl:
+            return 0
+        multiplier_power = 6 if pnl['currency'] == 'USDt' else 8
+        change = 1 if pnl['currency'] == 'USDt' else self.market_depth()['XBTUSD']['bids'][0][0]
+        realized_pnl = pnl['realisedPnl'] / 10 ** multiplier_power * change
+        unrealized_pnl = pnl['unrealisedPnl'] / 10 ** multiplier_power * change
+        return [realized_pnl + unrealized_pnl, pnl, realized_pnl]
+
+    def find_xbt_pos(self):
+        bal_bitmex = [x for x in self.funds() if x['currency'] == 'XBt'][0]
+        xbt_pos = bal_bitmex['walletBalance'] / 10 ** 8
+        return xbt_pos
 
     def __on_error(self, error):
         '''Called on fatal websocket errors. We exit on these.'''
@@ -365,57 +402,160 @@ class BitMEXWebsocket:
             change = self.market_depth()['XBTUSD']['bids'][0][0]
         else:
             funds = self.funds()[1]
+            change = 1
         positions = self.positions()
+        wallet_balance = (funds['walletBalance'] / 10 ** self.pos_power) * change
+        available_balance = wallet_balance * self.leverage
+        wallet_balance = 0 if 'USDT' in self.symbol else wallet_balance
+        position_value = 0
         for position in positions:
             if position['symbol'] == self.symbol:
                 if position['foreignNotional']:
                     position_value = position['homeNotional'] * position['lastPrice']
                     self.contract_price = abs(position_value / position['currentQty'])
-                else:
-                    position_value = 0
-                currency = position['currency']
-        # print(position_value)
-        if currency == 'XBt':
-            available_balance = (funds['walletBalance'] / 10 ** 8) * change * self.leverage
-        else:
-            available_balance = (funds['walletBalance'] / 10 ** 6) * self.leverage
+
         if side == 'Buy':
-            return available_balance - position_value
+            return available_balance - position_value - wallet_balance
         else:
-            return available_balance + position_value
+            return available_balance + position_value + wallet_balance
 
 
 # cp = configparser.ConfigParser()
 # if len(sys.argv) != 2:
-#     # print("Usage %s <config.ini>" % sys.argv[0])
 #     sys.exit(1)
 # cp.read(sys.argv[1], "utf-8")
-#
 # api_key = cp["BITMEX"]["api_key"]
 # api_secret = cp["BITMEX"]["api_secret"]
-# #
-# bitmex_client = BitMEXWebsocket(symbol='XBTUSDT', api_key=api_key, api_secret=api_secret)
-#
-# open_orders = bitmex_client.open_orders('')
-# print(open_orders)
-# id = open_orders[0]['orderID']
+# bitmex_client = BitMEXWebsocket(symbol='XBTUSD', api_key=api_key, api_secret=api_secret)
 
-# bitmex_client.cancel_order(id)
+
+# bal_bitmex = [x for x in self.client_Bitmex.funds() if x['currency'] == currency][0]
+
+
 # while True:
+#     pos_bitmex = [x for x in bitmex_client.positions() if x['symbol'] == 'XBTUSDT'][0]
+#     side = 'Buy' if pos_bitmex['currentQty'] < 0 else 'Sell'
+#     size = abs(pos_bitmex['currentQty'])
+#     open_orders = bitmex_client.open_orders(clOrdIDPrefix='')
+#     price = orderbook['asks'][0][0] if side == 'Sell' else orderbook['bids'][0][0]
+#     exist = False
+#     for order in open_orders:
+#         if 'CANCEL' in order['clOrdID']:
+#             if price != order['price']:
+#                 bitmex_client.change_order(size, price, order['orderID'])
+#                 print(f"Changed {size}")
+#             exist = True
+#             break
+#     if exist:
+#         continue
+#     bitmex_client.create_order(size, price, side, 'Limit', 'CANCEL')
+
+
+# timestamp = time.time() + 10000
+# while True:
+#     timestamp -= 10000
+#     date = datetime.datetime.fromtimestamp(timestamp)
+#     orders = bitmex_client.swagger_client.User.User_getExecutionHistory(symbol='XBTUSD', timestamp=date).result()
+#     # print(orders)
+#     for order in orders[0]:
+#         print(f"Time: {order['transactTime']}")
+#         print(f"Realized PNL: {order['realisedPnl'] / 1000000} USD")
+#         print(f"Side: {order['side']}")
+#         print(f"Order size: {order['orderQty'] / 1000000} BTC")
+#         print(f"Price: {order['price']}")
+#         print()
+# orders = bitmex_client.swagger_client.Settlement.Settlement_get(symbol='XBTUSDT',).result()
+# orders = bitmex_client.swagger_client.User.User_getWalletHistory(currency='USDt',).result()
+# instruments = bitmex_client.swagger_client.Instrument.Instrument_getActiveAndIndices().result()
+# print(instruments)
+# for instrument in instruments[0]:
+#     print(instrument['symbol'])
+# time.sleep(1)
+# orderbook = bitmex_client.market_depth()['XBT/USDT']
+# print(orderbook)
+# print(orders)
+# money = bitmex_client.funds()
+# print(money)
+#     bitmex_client.create_order(size, price, side, 'Limit', 'CANCEL')
+# bitmex_client.create_order(1000, 12000, 'Buy', 'Limit', 'CANCEL1')
+# time.sleep(1)
+# orders = bitmex_client.swagger_client.Order.Order_getOrders(symbol='XBTUSD', reverse=True).result()[0]
+# for order in orders:
+#     bitmex_client.change_order(2000, 15000, origClOrdID='CANCEL1', clOrdID='CANCEL3')
 #     time.sleep(1)
-#     # print(f"RECENT TRADES")
-#     # print(bitmex_client.recent_trades())
+#     orders = bitmex_client.open_orders('')
+#     print(orders)
+#     bitmex_client.cancel_order(order['orderID'])
+#     print(order)
+
+
+
+# orders = bitmex_client.open_orders('')
+# print(orders)
+
+#TRANZACTION HISTORY
+# orders = bitmex_client.swagger_client.User.User_getWalletHistory(currency='USDt',).result()
 #
-#     print(bitmex_client.get_available_balance('Buy'))
-#     print(bitmex_client.get_available_balance('Sell'))
-#     # print(bitmex_client.contract_price)
-# print(bitmex_client.taker_fee)
-# print(bitmex_client.maker_fee)
-# print('FUNDS')
-# print(bitmex_client.funds())
-    # print('POSITIONS')
-    # print(bitmex_client.positions())
-    # print('ORDERBOOK')
-    # print(bitmex_client.market_depth())
-    # print('\n\n\n\n')
+# for tranz in orders[0]:
+#     print("TRANZ:" + tranz['transactID'])
+#     print("type:" + str(tranz['transactType']))
+#     print("status:" + str(tranz['transactStatus']))
+#     print("amount:" + str(tranz['amount'] / (10 ** 6)))
+#     if tranz['fee']:
+#         print("fee:" + str(tranz['fee'] / (10 ** 6)))
+#     print("walletBalance:" + str(tranz['walletBalance'] / (10 ** 6)))
+#     if tranz['marginBalance']:
+#         print("marginBalance:" + str(tranz['marginBalance'] / (10 ** 6)))
+#     print('Timestamp:' + str(tranz['timestamp']))
+#     print()
+# time.sleep(1)
+
+
+# time.sleep(1)
+# open_orders = bitmex_client.open_orders(clOrdIDPrefix='BALANCING')
+# print(open_orders)
+
+# open_orders_resp = [{'orderID': '20772f48-24a3-4cff-a470-670d51a1666e', 'clOrdID': 'BALANCING', 'clOrdLinkID': '', 'account': 2133275,
+#   'symbol': 'XBTUSDT', 'side': 'Buy', 'simpleOrderQty': None, 'orderQty': 1000, 'price': 15000, 'displayQty': None,
+#   'stopPx': None, 'pegOffsetValue': None, 'pegPriceType': '', 'currency': 'USDT', 'settlCurrency': 'USDt',
+#   'ordType': 'Limit', 'timeInForce': 'GoodTillCancel', 'execInst': '', 'contingencyType': '', 'exDestination': 'XBME',
+#   'ordStatus': 'New', 'triggered': '', 'workingIndicator': True, 'ordRejReason': '', 'simpleLeavesQty': None,
+#   'leavesQty': 1000, 'simpleCumQty': None, 'cumQty': 0, 'avgPx': None, 'multiLegReportingType': 'SingleSecurity',
+#   'text': 'Submitted via API.', 'transactTime': '2022-11-16T17:18:45.740Z', 'timestamp': '2022-11-16T17:18:45.740Z'}]
+# bitmex_client.create_order(1000, 17000, 'Buy', 'Limit', 'BALANCING BTC2')
+# time.sleep(1)
+# print(commission.result())
+# print(orders.objRef)
+# print(orders.op)
+# print(orders.status)
+# bitmex_client.cancel_order(id)
+# print(bitmex_client.data['execution'])
+# print(bitmex_client.recent_trades())
+# print(bitmex_client.funds()[1])
+# print(bitmex_client.market_depth())
+# print(bitmex_client.get_instrument())
+
+#   [{'orderID': 'baf6fc1e-8f76-4090-a3f3-254314da86b4', 'clOrdID': 'BALANCING BTC', 'clOrdLinkID': '', 'account': 2133275,
+#   'symbol': 'XBTUSDT', 'side': 'Buy', 'simpleOrderQty': None, 'orderQty': 1000, 'price': 17000, 'displayQty': None,
+#   'stopPx': None, 'pegOffsetValue': None, 'pegPriceType': '', 'currency': 'USDT', 'settlCurrency': 'USDt',
+#   'ordType': 'Limit', 'timeInForce': 'GoodTillCancel', 'execInst': '', 'contingencyType': '', 'exDestination': 'XBME',
+#   'ordStatus': 'New', 'triggered': '', 'workingIndicator': True, 'ordRejReason': '', 'simpleLeavesQty': None,
+#   'leavesQty': 1000, 'simpleCumQty': None, 'cumQty': 0, 'avgPx': None, 'multiLegReportingType': 'SingleSecurity',
+#   'text': 'Submitted via API.', 'transactTime': '2022-11-16T17:24:10.721Z', 'timestamp': '2022-11-16T17:24:10.721Z',
+#   'lastQty': None, 'lastPx': None, 'lastLiquidityInd': '', 'tradePublishIndicator': '',
+#   'trdMatchID': '00000000-0000-0000-0000-000000000000', 'execID': 'cee84b5e-3946-afe5-c1c7-f7d99945dfd7',
+#   'execType': 'New', 'execCost': None, 'homeNotional': None, 'foreignNotional': None, 'commission': None,
+#   'lastMkt': '', 'execComm': None, 'underlyingLastPx': None},
+#    {'orderID': 'baf6fc1e-8f76-4090-a3f3-254314da86b4',
+#   'clOrdID': 'BALANCING BTC', 'clOrdLinkID': '', 'account': 2133275, 'symbol': 'XBTUSDT', 'side': 'Buy',
+#   'simpleOrderQty': None, 'orderQty': 1000, 'price': 17000, 'displayQty': None, 'stopPx': None, 'pegOffsetValue': None,
+#   'pegPriceType': '', 'currency': 'USDT', 'settlCurrency': 'USDt', 'ordType': 'Limit', 'timeInForce': 'GoodTillCancel',
+#   'execInst': '', 'contingencyType': '', 'exDestination': 'XBME', 'ordStatus': 'Filled', 'triggered': '',
+#   'workingIndicator': False, 'ordRejReason': '', 'simpleLeavesQty': None, 'leavesQty': 0, 'simpleCumQty': None,
+#   'cumQty': 1000, 'avgPx': 16519, 'multiLegReportingType': 'SingleSecurity', 'text': 'Submitted via API.',
+#   'transactTime': '2022-11-16T17:24:10.721Z', 'timestamp': '2022-11-16T17:24:10.721Z', 'lastQty': 1000, 'lastPx': 16519,
+#   'lastLiquidityInd': 'RemovedLiquidity', 'tradePublishIndicator': 'PublishTrade',
+#   'trdMatchID': '15cd273d-ded8-e339-b3b1-9a9080b5d10f', 'execID': 'adcc6b75-2d57-a9d2-47c4-8db921d8aae1',
+#   'execType': 'Trade', 'execCost': 16519000, 'homeNotional': 0.001, 'foreignNotional': -16.519,
+#   'commission': 0.00022500045, 'lastMkt': 'XBME', 'execComm': 3716, 'underlyingLastPx': None}]
 
