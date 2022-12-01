@@ -3,20 +3,17 @@ import unittest
 
 
 """Call bunch of targets at the same time
-
 Sample usage:
-    import multicall
-    my_pool = multicall.Pool()
-    my_pool.add(some_method, some_arg, kw1=1, kw2=2)
-    my_pool.add(other_method, other_args)
-    my_pool.add(third_method)
-    my_pool.call_and_wait() # will start all targets and wait until all done.
-
+import multicall
+my_pool = multicall.Pool()
+my_pool.add(some_method, some_arg, kw1=1, kw2=2)
+my_pool.add(other_method, other_args)
+my_pool.add(third_method)
+my_pool.call_and_wait() # will start all targets and wait until all done.
 Please note: if you need to call:
-    some_method(some_arg, kw1=1, kw2=2)
+some_method(some_arg, kw1=1, kw2=2)
 You have to use following syntax:
-    my_pool.add(some_method, some_arg, kw1=1, kw2=2)
-
+my_pool.add(some_method, some_arg, kw1=1, kw2=2)
 """
 
 
