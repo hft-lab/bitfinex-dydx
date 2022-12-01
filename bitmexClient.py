@@ -283,10 +283,14 @@ class BitMEXWebsocket:
         '''Handler for parsing WS messages.'''
         message = json.loads(message)
         self.logger.debug(json.dumps(message))
-
         table = message.get("table")
         action = message.get("action")
         try:
+            #TEST WS SPEED
+            # timestamp = float(str(message['data'][0]['timestamp']).split('.')[1].split('Z')[0])
+            # now_timestamp = float(str(datetime.datetime.now()).split('.')[1]) % 1000
+            # diff = now_timestamp - timestamp if now_timestamp - timestamp > 0 else now_timestamp - timestamp + 1000
+            # print(f"Time shift: {diff} ms")
             if 'subscribe' in message:
                 self.logger.debug("Subscribed to %s." % message['subscribe'])
             elif action:
@@ -378,6 +382,11 @@ class BitMEXWebsocket:
             self.logger.error("Error : %s" % error)
             raise websocket.WebSocketException(error)
 
+    def get_real_balance(self):
+        currency = 'XBt' if not 'USDT' in self.symbol else 'USDt'
+        tranzactions = self.swagger_client.User.User_getWalletHistory(currency=currency).result()
+        return tranzactions[0][0]['marginBalance']
+
     def __on_open(self):
         '''Called when the WS opens.'''
         self.logger.debug("Websocket Opened.")
@@ -398,15 +407,15 @@ class BitMEXWebsocket:
 
     def get_available_balance(self, side):
         if not 'USDT' in self.symbol:
-            funds = self.funds()[0]
-            change = self.market_depth()['XBTUSD']['bids'][0][0]
-        else:
             funds = self.funds()[1]
             change = 1
+        else:
+            funds = self.funds()[0]
+            change = self.market_depth()['XBTUSD']['bids'][0][0]
         positions = self.positions()
         wallet_balance = (funds['walletBalance'] / 10 ** self.pos_power) * change
         available_balance = wallet_balance * self.leverage
-        wallet_balance = 0 if 'USDT' in self.symbol else wallet_balance
+        wallet_balance = wallet_balance if self.symbol == 'XBTUSD' else 0
         position_value = 0
         for position in positions:
             if position['symbol'] == self.symbol:
@@ -420,13 +429,18 @@ class BitMEXWebsocket:
             return available_balance + position_value + wallet_balance
 
 
-# cp = configparser.ConfigParser()
-# if len(sys.argv) != 2:
-#     sys.exit(1)
-# cp.read(sys.argv[1], "utf-8")
-# api_key = cp["BITMEX"]["api_key"]
-# api_secret = cp["BITMEX"]["api_secret"]
-# bitmex_client = BitMEXWebsocket(symbol='XBTUSD', api_key=api_key, api_secret=api_secret)
+
+cp = configparser.ConfigParser()
+if len(sys.argv) != 2:
+    sys.exit(1)
+cp.read(sys.argv[1], "utf-8")
+api_key = cp["BITMEX"]["api_key"]
+api_secret = cp["BITMEX"]["api_secret"]
+bitmex_client = BitMEXWebsocket(symbol='XBTUSD', api_key=api_key, api_secret=api_secret)
+# while True:
+#     time.sleep(1)
+# funding = bitmex_client.swagger_client.Funding.Funding_get(symbol='XBTUSD').result()
+# print(funding)
 
 
 # bal_bitmex = [x for x in self.client_Bitmex.funds() if x['currency'] == currency][0]
@@ -451,19 +465,20 @@ class BitMEXWebsocket:
 #     bitmex_client.create_order(size, price, side, 'Limit', 'CANCEL')
 
 
-# timestamp = time.time() + 10000
-# while True:
-#     timestamp -= 10000
-#     date = datetime.datetime.fromtimestamp(timestamp)
-#     orders = bitmex_client.swagger_client.User.User_getExecutionHistory(symbol='XBTUSD', timestamp=date).result()
-#     # print(orders)
-#     for order in orders[0]:
-#         print(f"Time: {order['transactTime']}")
-#         print(f"Realized PNL: {order['realisedPnl'] / 1000000} USD")
-#         print(f"Side: {order['side']}")
-#         print(f"Order size: {order['orderQty'] / 1000000} BTC")
-#         print(f"Price: {order['price']}")
-#         print()
+timestamp = time.time() + 10000
+while True:
+    timestamp -= 10000
+    date = datetime.datetime.fromtimestamp(timestamp)
+    orders = bitmex_client.swagger_client.User.User_getExecutionHistory(symbol='XBTUSD', timestamp=date).result()
+    # print(orders)
+    for order in orders[0]:
+        print(f"Time: {order['transactTime']}")
+        print(f"Order ID: {order['clOrdID']}")
+        # print(f"Realized PNL: {order['realisedPnl'] / 100000000} USD")
+        print(f"Side: {order['side']}")
+        print(f"Order size: {order['orderQty']} USD")
+        print(f"Price: {order['price']}")
+        print()
 # orders = bitmex_client.swagger_client.Settlement.Settlement_get(symbol='XBTUSDT',).result()
 # orders = bitmex_client.swagger_client.User.User_getWalletHistory(currency='USDt',).result()
 # instruments = bitmex_client.swagger_client.Instrument.Instrument_getActiveAndIndices().result()
