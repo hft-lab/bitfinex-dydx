@@ -9,7 +9,6 @@ from web3 import Web3
 from dydx3 import Client
 from dydx3.constants import API_HOST_MAINNET
 from dydx3.constants import WS_HOST_MAINNET
-from dydx3.constants import API_HOST_MAINNET
 from dydx3.constants import NETWORK_ID_MAINNET
 from dydx3.helpers.request_helpers import generate_now_iso
 
@@ -58,11 +57,12 @@ class DydxClient:
 
         self.keys = keys
         self.user = self.client.private.get_user().data
-        self.balance = self.client.private.get_account().data
+        account = self.client.private.get_account().data
         self.markets = self.client.public.get_markets().data
         self.leverage = leverage
 
-        self.position_id = self.balance['account']['positionId']
+        self.balance = {'free': account['account']['equity'], 'total': account['account']['freeCollateral']}
+        self.position_id = account['account']['positionId']
 
         self.maker_fee = float(self.user['user']['makerFeeRate']) * 0.7
         self.taker_fee = float(self.user['user']['takerFeeRate']) * 0.7
@@ -72,6 +72,9 @@ class DydxClient:
 
     def cancel_order(self, orderID):
         self.client.private.cancel_order(order_id=orderID)
+
+    def get_real_balance(self):
+        return float(self.client.private.get_account().data['account']['equity'])
 
     def presize_amount(self, amount):
         if '.' in str(self.stepsize):
@@ -209,7 +212,6 @@ class DydxClient:
             if self.offsets.get(new_order[0]):
                 if self.offsets[new_order[0]] > offset:
                     continue
-            self.orderbook['timestamp'] = time.time()
             self.offsets[new_order[0]] = offset
             new_order = [float(new_order[0]), float(new_order[1]), offset]
             index = 0
@@ -233,6 +235,8 @@ class DydxClient:
                 index += 1
             if index == 0:
                 self._check_for_error()
+        self.orderbook['timestamp'] = time.time()
+
 
 
 
@@ -421,20 +425,48 @@ class DydxClient:
 
 
 
-# import configparser
-# import sys
+import configparser
+import sys
 
-# cp = configparser.ConfigParser()
-# if len(sys.argv) != 2:
-#     sys.exit(1)
-# cp.read(sys.argv[1], "utf-8")
-# dydx_keys = cp['DYDX']
-# client = DydxClient('DOGE-USD', dydx_keys)
+cp = configparser.ConfigParser()
+if len(sys.argv) != 2:
+    sys.exit(1)
+cp.read(sys.argv[1], "utf-8")
+dydx_keys = cp['DYDX']
+client = DydxClient('BTC-USD', dydx_keys)
+client.run_updater()
+# time.sleep(2)
+
+orders_response = client.client.private.get_orders(
+    market='BTC-USD',
+    status='UNTRIGGERED'
+).data
+print(orders_response)
+# client.create_order(amount=0.1, price=1000000, side='SELL', type='LIMIT')
+# #
+# while True:
+#     time.sleep(1)
+#     a = client.orders
+#     print(a)
+
+# #     balance_DYDX = client.client.private.get_account().data
+# #     print(client.orderbook)
+# #     print(balance_DYDX)
+# #     print()
+# client_pub = Client(host=API_HOST_MAINNET)
+# average_dydx = []
+# average_bitmex = []
 # client.run_updater()
+#
+# while True:
+#     orderbook = client_pub.public.get_orderbook(market='BTC-USD').data
+#     print(orderbook)
+#     print(client.orderbook)
+#     print()
+#     print()
 
 # while True:
 # orderbook = client.get_orderbook()
-# client.create_order(amount=0.45, price=orderbook['bids'][0][0], side='SELL', type='LIMIT')
 # print(client.get_fills())
 # positions = client.get_positions()
 # print(client.get_fills())
