@@ -142,16 +142,24 @@ class DydxClient:
 
 
     def run_updater(self):
-        self.wst = threading.Thread(target=lambda: self._loop.run_until_complete(self._run_ws_loop()))
+        self.wst = threading.Thread(target=self._run_ws_forever)
         self.wst.daemon = True
         self.wst.start()
             # except Exception as e:
             #     print(f"Error line 33: {e}")
 
 
+    def _run_ws_forever(self):
+        while True:
+            try:
+                self._loop.run_until_complete(self._run_ws_loop())
+            finally:
+                print("WS loop completed. Restarting")
+
     async def _run_ws_loop(self):
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(URI_WS) as ws:
+                print("DyDx: connected")
                 self._connected.set()
                 try:
                     self._ws = ws
@@ -159,6 +167,8 @@ class DydxClient:
                     self._loop.create_task(self._subscribe_account())
                     async for msg in ws:
                         self._process_msg(msg)
+                except Exception as e:
+                    print("DyDx ws loop exited: ", ex)
                 finally:
                     self._connected.clear()
 
